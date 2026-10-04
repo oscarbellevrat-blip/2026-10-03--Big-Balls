@@ -8,12 +8,12 @@
 }
 
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);touch-action:manipulation}
 body{
   font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif;
-  color:#eaf2ff;user-select:none;
+  color:#eaf2ff;user-select:none;-webkit-touch-callout:none;
 }
-canvas#game{position:fixed;inset:0;display:block;}
+canvas#game{position:fixed;inset:0;display:block;touch-action:none}
 
 .hidden{display:none !important}
 
@@ -25,8 +25,7 @@ canvas#game{position:fixed;inset:0;display:block;}
 }
 .hud-box{
   min-width:110px;padding:7px 16px;border-radius:14px;
-  background:var(--glass);border:1px solid var(--stroke);
-  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  background:rgba(14,20,38,.84);border:1px solid var(--stroke);
   display:flex;flex-direction:column;align-items:center;
   box-shadow:0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.07);
 }
@@ -41,6 +40,21 @@ canvas#game{position:fixed;inset:0;display:block;}
   background:rgba(8,12,24,.5);padding:4px 12px;border-radius:20px;
   border:1px solid rgba(120,200,255,.12);
 }
+.hud-missions{
+  position:absolute;top:104px;left:14px;display:flex;flex-direction:column;gap:5px;
+  width:min(230px,44vw);pointer-events:none;
+}
+.mission,.chain{
+  display:flex;justify-content:space-between;gap:10px;
+  font-size:11.5px;font-weight:700;letter-spacing:.5px;color:#c7dcf5;
+  background:rgba(8,12,24,.55);padding:6px 11px;border-radius:10px;
+  border:1px solid rgba(120,200,255,.14);
+}
+.mission b{color:var(--gold)}
+.mission.done{color:#7dffb0;border-color:rgba(125,255,176,.35)}
+.mission.done b{color:#7dffb0}
+.chain{justify-content:center;color:var(--gold);border-color:rgba(255,211,90,.45);
+  text-shadow:0 0 10px rgba(255,211,90,.6)}
 .hud-msg{
   position:absolute;top:38%;left:50%;transform:translate(-50%,-50%) scale(1);
   font-size:34px;font-weight:900;letter-spacing:2px;opacity:0;
@@ -56,10 +70,24 @@ canvas#game{position:fixed;inset:0;display:block;}
   border:1px solid rgba(120,200,255,.14);
 }
 .hud-help b{color:var(--neon)}
+.hud-progress{
+  position:absolute;top:100px;left:50%;transform:translateX(-50%);
+  width:min(300px,38vw);height:5px;border-radius:5px;background:rgba(255,255,255,.14);overflow:hidden;
+}
+.hud-progress i{display:block;height:100%;width:0;border-radius:5px;background:linear-gradient(90deg,var(--neon),var(--gold))}
+#hud.touch .hud-help{display:none}      /* l'aide clavier n'a pas de sens (et déborde) sur écran tactile */
+.hud-pause{
+  position:absolute;top:10px;right:10px;width:44px;height:44px;border-radius:50%;
+  pointer-events:auto;cursor:pointer;font-family:inherit;font-size:13px;font-weight:900;letter-spacing:1px;
+  background:var(--glass);color:#cfeaff;border:1px solid var(--stroke);
+  box-shadow:0 6px 18px rgba(0,0,0,.4);
+}
+.hud-pause:active{background:rgba(49,230,255,.4)}
 
 /* ============ OVERLAYS ============ */
 .overlay{
-  position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;
+  /* contenu centré par `margin:auto` (et non align/justify:center) : si l'écran est trop court, on peut défiler jusqu'en haut */
+  position:fixed;inset:0;z-index:40;display:flex;overflow-y:auto;-webkit-overflow-scrolling:touch;
   background:radial-gradient(ellipse at 50% 30%,rgba(20,40,90,.55),rgba(4,6,14,.92) 70%);
   backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
   animation:fade .35s ease;
@@ -67,7 +95,7 @@ canvas#game{position:fixed;inset:0;display:block;}
 @keyframes fade{from{opacity:0}to{opacity:1}}
 
 /* ---------- MENU ---------- */
-.menu-inner{text-align:center;padding:30px;animation:rise .5s cubic-bezier(.2,.9,.3,1.2)}
+.menu-inner{text-align:center;padding:30px;margin:auto;animation:rise .5s cubic-bezier(.2,.9,.3,1.2)}
 @keyframes rise{from{transform:translateY(24px);opacity:0}to{transform:none;opacity:1}}
 .logo{
   font-size:clamp(54px,11vw,110px);font-weight:900;letter-spacing:4px;line-height:.95;
@@ -104,7 +132,12 @@ canvas#game{position:fixed;inset:0;display:block;}
   box-shadow:0 0 0 2px rgba(49,230,255,.35),0 8px 24px rgba(0,0,0,.4);
 }
 .world-btn.selected b{color:var(--neon);text-shadow:0 0 10px rgba(49,230,255,.7)}
+.world-btn .rec{color:#7fa7c9;font-size:9.5px;letter-spacing:.6px}
+.world-btn.locked{opacity:.5;cursor:not-allowed}
+.world-btn.locked:hover{transform:none;border-color:rgba(120,200,255,.22)}
+.world-btn.locked .rec{color:var(--gold)}
 .menu-foot{margin-top:26px;display:flex;flex-direction:column;gap:12px;align-items:center}
+.foot-btns{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
 .muted{color:#8fa7c4;font-size:13px}
 .muted b{color:#fff}
 
@@ -133,7 +166,7 @@ canvas#game{position:fixed;inset:0;display:block;}
   width:min(1100px,94vw);height:min(88vh,900px);display:flex;flex-direction:column;
   background:linear-gradient(180deg,rgba(12,18,36,.94),rgba(7,10,22,.96));
   border:1px solid var(--stroke);border-radius:22px;overflow:hidden;
-  box-shadow:0 30px 80px rgba(0,0,0,.6);animation:rise .4s ease;
+  box-shadow:0 30px 80px rgba(0,0,0,.6);animation:rise .4s ease;margin:auto;
 }
 .shop-head{
   display:flex;align-items:center;justify-content:space-between;gap:14px;
@@ -178,9 +211,18 @@ canvas#game{position:fixed;inset:0;display:block;}
 .price .tag.owned{color:#5affc0}
 .card .btn{padding:9px 16px;font-size:11.5px;border-radius:10px;letter-spacing:1px}
 
+/* toast de la boutique (le HUD, lui, est masqué hors course) */
+.shop-toast{
+  position:absolute;bottom:26px;left:50%;transform:translateX(-50%);padding:10px 22px;border-radius:30px;
+  background:rgba(14,22,44,.94);border:1px solid rgba(90,255,180,.55);color:#5affc0;
+  font-weight:800;letter-spacing:1px;opacity:0;pointer-events:none;white-space:nowrap;
+}
+.shop-toast.show{animation:shopToast 1.7s ease forwards}
+@keyframes shopToast{0%{opacity:0;transform:translate(-50%,10px)}12%{opacity:1;transform:translate(-50%,0)}80%{opacity:1}100%{opacity:0;transform:translate(-50%,0)}}
+
 /* ---------- GAME OVER ---------- */
 .over-inner{
-  width:min(440px,92vw);text-align:center;padding:30px 28px;border-radius:22px;
+  width:min(440px,92vw);text-align:center;padding:30px 28px;border-radius:22px;margin:auto;
   background:linear-gradient(180deg,rgba(16,24,46,.95),rgba(7,10,22,.97));
   border:1px solid var(--stroke);box-shadow:0 30px 80px rgba(0,0,0,.6);
   animation:rise .45s cubic-bezier(.2,.9,.3,1.2);
@@ -197,15 +239,52 @@ canvas#game{position:fixed;inset:0;display:block;}
 .res-row b{color:#eafaff}
 .res-row.total{background:rgba(255,211,90,.12)}
 .res-row.total b{color:var(--gold);font-size:17px;text-shadow:0 0 12px rgba(255,211,90,.6)}
+.gain-detail{font-size:11.5px;color:#9db6d6;letter-spacing:.5px;margin:-10px 0 12px}
+.miss-list{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+.rm{display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:5px 12px;border-radius:8px;background:rgba(255,255,255,.04);color:#b9cde6}
+.rm b{color:var(--gold)}
+.rm.done{color:#7dffb0}
+.rm.done b{color:#7dffb0}
+.next-buy{margin-bottom:16px;font-size:12px;color:#9db6d6;letter-spacing:.5px}
+.next-bar{height:6px;border-radius:6px;background:rgba(255,255,255,.1);margin-top:6px;overflow:hidden}
+.next-bar i{display:block;height:100%;width:0;border-radius:6px;background:linear-gradient(90deg,var(--neon),#5affc0);transition:width .6s ease}
 .over-buttons{display:flex;flex-direction:column;gap:11px}
 
+/* ---------- ÉCRANS COURTS (téléphone en paysage) : menu et fin de course compacts, tout reste atteignable ---------- */
+@media (max-height:480px){
+  .menu-inner{padding:12px 20px}
+  .logo{font-size:clamp(34px,8vw,56px);letter-spacing:3px}
+  .tagline{margin:2px 0 8px;font-size:11px;letter-spacing:8px}
+  .menu-credits{margin-bottom:10px;padding:6px 16px}
+  .menu-buttons{flex-direction:row;width:auto;gap:8px;justify-content:center}
+  .btn{padding:10px 16px;font-size:13px}
+  .btn.tiny{padding:7px 12px;font-size:11px}
+  .menu-worlds{margin-top:10px;gap:8px}
+  .world-btn{padding:6px 12px}
+  .menu-foot{margin-top:10px;gap:8px}
+  .over-inner{padding:14px 20px}
+  .over-inner h2{font-size:24px;margin-bottom:10px}
+  .results{margin-bottom:12px}
+  .res-row{padding:6px 14px;font-size:12.5px}
+  .over-buttons{flex-direction:row;justify-content:center;flex-wrap:wrap;gap:8px}
+  .results{display:grid;grid-template-columns:1fr 1fr}
+  .res-row.world{display:none}
+  .res-row.total{grid-column:1 / -1}
+  .gain-detail{margin:-4px 0 6px;font-size:10.5px}
+  .miss-list{margin-bottom:6px;gap:3px}
+  .rm{padding:3px 10px;font-size:11px}
+  .next-buy{margin-bottom:8px;font-size:11px}
+  .hud-progress{top:96px}
+  .shop-inner{height:94vh}
+}
+
 /* ---------- TOUCH ---------- */
-#touch{position:fixed;inset:0;z-index:30;pointer-events:none}
+#touch{position:fixed;inset:0;z-index:30;pointer-events:none;touch-action:none}
 .tbtn{
+  touch-action:none;
   position:absolute;bottom:24px;width:74px;height:74px;border-radius:50%;
   font-size:24px;font-weight:900;pointer-events:auto;font-family:inherit;
-  background:rgba(20,32,60,.6);color:#cfeaff;border:1px solid rgba(120,200,255,.4);
-  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  background:rgba(20,32,60,.74);color:#cfeaff;border:1px solid rgba(120,200,255,.4);
 }
 .tbtn:active{background:rgba(49,230,255,.4)}
 .tbtn[data-key="left"]{left:20px}

@@ -202,13 +202,14 @@ const WORLDS = [
     dust:'#a8d47c',
     perf:0.75,
     water:{ level:-70, hi:'rgba(150,220,255,.55)', mid:'rgba(40,115,175,.78)', deep:'rgba(8,40,75,.92)', foam:'rgba(230,250,255,.75)' },
-    gen:{ amp:1.05, w:[0.16,0.08,0.26,0.00,0.08,0.16,0.26], startFlat:900, easyIntro:true }
+    gen:{ amp:1.05, w:[0.16,0.08,0.26,0.00,0.08,0.16,0.26], startFlat:900, easyIntro:true, ramp:1.25 }   // ramp : les motos y sont bridées (perf 0,75), rampes 25 % plus longues
   }
 ];
 const world = () => WORLDS[clamp(Save.selWorld | 0, 0, WORLDS.length - 1)];
 
 /* ------------------------------ SAVE ------------------------------ */
 const SKEY = 'bigballs.v2';
+const UNLOCK_WORLDS = true;   // un monde ne se débloque qu'en terminant le précédent (mettre false pour tout ouvrir)
 const Save = {
   credits: 500,
   ownedBikes: [0],
@@ -217,29 +218,58 @@ const Save = {
   selChar: 0,
   selWorld: 0,
   best: 0,
+  cleared: [],      // mondes dont l'objectif de distance a été atteint
+  missionsDone: 0,
+  shakeLvl: 0,      // option d'accessibilité : index dans SHAKE_LEVELS (0 = normale)
+  bests: [0, 0, 0], // record de distance par monde (l'ancien `best` reste le record toutes courses confondues)
+  sound: true,
   load(){
     try {
       const d = JSON.parse(localStorage.getItem(SKEY) || 'null');
-      if (d) Object.assign(this, d);
+      if (d && typeof d === 'object') Object.assign(this, this.sane(d));
     } catch(e){}
+  },
+  // ne garde que des valeurs de la bonne forme : une sauvegarde abîmée ou modifiée à la main ne doit pas faire planter le jeu
+  sane(d){
+    const num = (v, def, hi = 1e12) => Number.isFinite(+v) ? clamp(+v, 0, hi) : def;
+    const ids = (v, n) => Array.isArray(v) ? [...new Set(v.map(Number).filter(i => Number.isInteger(i) && i >= 0 && i < n))] : [];
+    const out = {};
+    out.credits = num(d.credits, 500);
+    out.ownedBikes = ids(d.ownedBikes, BIKES.length); if (!out.ownedBikes.includes(0)) out.ownedBikes.unshift(0);
+    out.ownedChars = ids(d.ownedChars, CHARS.length); if (!out.ownedChars.includes(0)) out.ownedChars.unshift(0);
+    out.selBike = out.ownedBikes.includes(+d.selBike) ? +d.selBike : 0;
+    out.selChar = out.ownedChars.includes(+d.selChar) ? +d.selChar : 0;
+    out.cleared = ids(d.cleared, WORLDS.length);
+    out.selWorld = Math.round(num(d.selWorld, 0, WORLDS.length - 1));
+    if (UNLOCK_WORLDS && out.selWorld > 0 && !out.cleared.includes(out.selWorld - 1)) out.selWorld = 0;   // monde pas encore débloqué
+    out.best = num(d.best, 0);
+    out.bests = WORLDS.map((_, i) => num(Array.isArray(d.bests) ? d.bests[i] : 0, 0));
+    out.missionsDone = Math.round(num(d.missionsDone, 0));
+    out.shakeLvl = Math.round(num(d.shakeLvl, 0, SHAKE_LEVELS_N - 1));
+    out.sound = d.sound !== false;
+    return out;
   },
   store(){
     try {
       localStorage.setItem(SKEY, JSON.stringify({
         credits:this.credits, ownedBikes:this.ownedBikes, ownedChars:this.ownedChars,
-        selBike:this.selBike, selChar:this.selChar, selWorld:this.selWorld, best:this.best
+        selBike:this.selBike, selChar:this.selChar, selWorld:this.selWorld, best:this.best,
+        cleared:this.cleared, missionsDone:this.missionsDone, shakeLvl:this.shakeLvl,
+        bests:this.bests, sound:this.sound
       }));
     } catch(e){}
   }
 };
+const SHAKE_LEVELS_N = 3;          // nombre de niveaux de SHAKE_LEVELS (déclaré plus bas, avant le premier appel de load)
 Save.load();
+Snd.on = Save.sound;               // le réglage du son est mémorisé
 
 /* ------------------------------ CANVAS ------------------------------ */
 const cv = $('game');
 const ctx = cv.getContext('2d');
 let W = 0, H = 0, DPR = 1;
 function resize(){
-  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  DPR = Math.min(window.devicePixelRatio || 1, 'ontouchstart' in window ? 1.5 : 2);   // tactile : moins de pixels à remplir
   W = window.innerWidth; H = window.innerHeight;
   cv.width = Math.floor(W * DPR); cv.height = Math.floor(H * DPR);
   cv.style.width = W + 'px'; cv.style.height = H + 'px';
@@ -250,7 +280,7 @@ resize();
 
 /* ------------------------------ TERRAIN ------------------------------ */
 const STEP = 4;
-const Terrain = { E: null, n: 0, genX: 0, rng: null, seed: 1 };
+const Terrain = { E: null, n: 0, genX: 0, rng: null, seed: 1, tail: 0 };
 let GEN = WORLDS[0].gen;
 
 function tAdd(x0, width, fn){
@@ -267,8 +297,13 @@ const smooth = t => t * t * (3 - 2 * t);
 /* Toutes les bosses respectent une pente max (~40-50°) pour rester franchissables.
    smooth() a une pente max de 1.5*H/w, d'où les largeurs minimales ci-dessous. */
 const easeIn = t => Math.pow(t, 1.6);
+// difficulté qui monte avec la distance : +12 % d'amplitude à 1 000 m, +25 % à 2 000 m, plafonné à +35 % (les largeurs suivent, donc les pentes restent franchissables)
+const ampAt = x => GEN.amp * (1 + Math.min(0.35, x / 80000));
+// rampes plus longues (donc moins raides) dans les mondes où les motos sont bridées : GEN.ramp > 1
+const rampK = () => GEN.ramp || 1;
 function featHill(x, rng, easy){
-  const Hh = (easy ? 30 + rng() * 40 : 40 + rng() * 130) * GEN.amp;
+  const amp = ampAt(x);
+  const Hh = (easy ? 30 + rng() * 40 : 40 + rng() * 130) * amp;
   const wu = Math.max(150 + rng() * 220, Hh * 2.1);
   const wd = Math.max(150 + rng() * 260, Hh * 2.0);
   tAdd(x, wu, t => Hh * smooth(t));
@@ -276,27 +311,30 @@ function featHill(x, rng, easy){
   return wu + wd + 40 + rng() * 80;
 }
 function featWhoops(x, rng, easy){
+  const amp = ampAt(x);
   const count = easy ? 3 : 3 + Math.floor(rng() * 6);
   const wl = 100 + rng() * 60;
-  const A = Math.min(wl * 0.2, (12 + rng() * (easy ? 8 : 20)) * GEN.amp);
+  const A = Math.min(wl * 0.2, (12 + rng() * (easy ? 8 : 20)) * amp);
   const w = count * wl;
   tAdd(x, w, t => A * 0.5 * (1 - Math.cos(t * TAU * count)));
   return w + 50 + rng() * 80;
 }
 function featKicker(x, rng){
+  const amp = ampAt(x);
   // rampe de saut (lèvre franche) + pente de réception qui s'adoucit vers le sol
-  const Hh = (50 + rng() * 85) * GEN.amp;
-  const wu = Hh * 1.7 + 30 + rng() * 40;
+  const Hh = (50 + rng() * 85) * amp;
+  const wu = (Hh * 1.7 + 30 + rng() * 40) * rampK();
   const wd = Hh * 2.4;
   tAdd(x, wu, t => Hh * easeIn(t));
   tAdd(x + wu, wd, t => Hh * (1 - t) * (1 - t));   // (1-t)^2 : retombe en douceur
   return wu + wd + 80 + rng() * 90;
 }
 function featGap(x, rng){
+  const amp = ampAt(x);
   // grande rampe, puis vallée à franchir (ou à traverser)
-  const Hh = (50 + rng() * 70) * GEN.amp;
-  const depth = (40 + rng() * 70) * GEN.amp;
-  const wu = Hh * 1.8 + 40 + rng() * 40;
+  const Hh = (50 + rng() * 70) * amp;
+  const depth = (40 + rng() * 70) * amp;
+  const wu = (Hh * 1.8 + 40 + rng() * 40) * rampK();
   const wdn = (Hh + depth) * 2.2 + 60 + rng() * 80;
   const wr = depth * 3.6 + 40;
   tAdd(x, wu, t => Hh * easeIn(t));
@@ -305,16 +343,18 @@ function featGap(x, rng){
   return wu + wdn + wr + 60;
 }
 function featRidge(x, rng){
-  const Hh = (80 + rng() * 90) * GEN.amp;
+  const amp = ampAt(x);
+  const Hh = (80 + rng() * 90) * amp;
   const w = Math.max(240 + rng() * 120, Hh * 3.6);
   tAdd(x, w, t => Hh * Math.pow(Math.sin(Math.PI * t), 1.5));
   return w + 50 + rng() * 60;
 }
 function featMega(x, rng){
+  const amp = ampAt(x);
   // énorme tremplin avec un trou au milieu du saut : le grand frisson
-  const Hh = (90 + rng() * 70) * GEN.amp;
+  const Hh = (90 + rng() * 70) * amp;
   const hole = 24 + rng() * 36;
-  const wu = Hh * 1.7 + 30 + rng() * 40;
+  const wu = (Hh * 1.7 + 30 + rng() * 40) * rampK();
   const gap = 140 + rng() * 140;
   const wd = Hh * 2.2;
   tAdd(x, wu, t => Hh * easeIn(t));
@@ -323,10 +363,11 @@ function featMega(x, rng){
   return wu + gap + wd + 90 + rng() * 90;
 }
 function featWater(x, rng){
+  const amp = ampAt(x);
   // rampe de décollage, lac peu profond, berge courte puis plateau plat pour l'atterrissage
-  const Hh = (70 + rng() * 60) * GEN.amp;
-  const depth = 70 + (25 + rng() * 35) * GEN.amp;
-  const wu = Hh * 2.0 + 60 + rng() * 40;
+  const Hh = (70 + rng() * 60) * amp;
+  const depth = 70 + (25 + rng() * 35) * amp;
+  const wu = (Hh * 2.0 + 60 + rng() * 40) * rampK();
   const gap = 150 + rng() * 100;
   const wd = Math.max(300, depth * 2.0) + rng() * 80;
   tAdd(x, wu, t => Hh * easeIn(t));
@@ -347,7 +388,7 @@ function addChunk(len){
   if (Terrain.E) arr.set(Terrain.E.subarray(0, oldN));
   Terrain.E = arr; Terrain.n = oldN + nNew;
 
-  let x = startX;
+  let x = Math.max(startX, Terrain.tail);   // reprend après le débordement de la dernière feature du bloc précédent
   if (startX < 1){
     x = GEN.startFlat; // piste plate au départ + petits échauffements
     if (GEN.easyIntro){
@@ -367,6 +408,7 @@ function addChunk(len){
     }
     x += FEATS[pick](x, Terrain.rng);
   }
+  Terrain.tail = x;
   Terrain.genX = endX;
 }
 function ensureTerrain(upto){
@@ -375,7 +417,7 @@ function ensureTerrain(upto){
 function newTrack(seed){
   GEN = world().gen;
   Terrain.E = new Float32Array(STEP * 2);
-  Terrain.n = 0; Terrain.genX = 0;
+  Terrain.n = 0; Terrain.genX = 0; Terrain.tail = 0;
   Terrain.seed = seed;
   Terrain.rng = mulberry32(seed >>> 0);
   ensureTerrain(24000);
@@ -410,13 +452,24 @@ function spawnText(x, y, txt, color){
 
 /* ------------------------------ INPUT ------------------------------ */
 const keys = {};
+const isTouch = 'ontouchstart' in window;   // commandes tactiles, jauge déplacée, aide clavier masquée
 const In = { throttle:0, brake:0, lean:0, nitro:false, restart:false };
+// lettres lues par position physique (e.code) : W/A/S/D deviennent Z/Q/S/D sur un clavier AZERTY ; flèches et espace par e.key
+const keyId = e => e.code && e.code.startsWith('Key') ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
 window.addEventListener('keydown', e => {
-  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
-  keys[e.key.toLowerCase()] = true;
-  if (e.key === 'r' || e.key === 'R') In.restart = true;
+  // les flèches/espace ne sont captées qu'en jeu : ailleurs (boutique…) elles gardent leur rôle normal
+  if (state === 'play' && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+  keys[keyId(e)] = true;
+  if (e.repeat) return;
+  if (state === 'play'){
+    if (e.key === 'r' || e.key === 'R') In.restart = true;
+    if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') setPause(!paused);
+  } else if (state === 'over' && !$('over').classList.contains('hidden') &&      // l'écran de fin doit être affiché (pas la boutique ouverte depuis lui)
+             (e.key === 'Enter' || e.key === ' ' || e.key === 'r' || e.key === 'R')){
+    e.preventDefault(); startGame();                    // rejouer au clavier depuis l'écran de fin
+  }
 });
-window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+window.addEventListener('keyup', e => { keys[keyId(e)] = false; });
 window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
 
 const touchKeys = {};
@@ -449,11 +502,35 @@ const bike = {
   onGround:false, air:false, airTime:0, totalAir:0,
   rotAcc:0, flips:0, pendFlips:0, earned:0, wheelAng:0, throttle:0,
   nitro:1, boosting:0, dead:false, deadT:0,
-  contacts:0, squash:0, shake:0, leanSm:0
+  chain:0, chainT:0, bestJump:0, goalHit:false, missionGain:0,
+  banked:0,         // crédits de distance déjà encaissés avant la fin de course (voir bankRun)
+  contacts:0, squash:0, leanSm:0
 };
 let camX = 0, camY = 0, camZoom = 1;
 let waterPathCache = null;
 let runSeed = 1, startX = 0;
+
+/* ------------------------------ GAME FEEL ------------------------------ */
+// Paliers d'importance (trauma / hit-stop) : atterrissage = moyen, figure = fort, chute = fort.
+const fx = { trauma:0, t:0, stop:0, sqz:0, sqzV:0 };
+const SHAKE_MAX = 16;      // px de décalage à trauma = 1 (la secousse suit trauma²)
+const SHAKE_DECAY = 1.5;   // trauma perdu par seconde : la secousse finit toujours seule
+const SHAKE_LEVELS = [{ k:1, txt:'Normale' }, { k:0.4, txt:'Réduite' }, { k:0, txt:'Aucune' }];
+const STOP_MAX = 0.14;     // plafond du hit-stop (s) : pas de blocage même si plusieurs impacts s'empilent
+const SQZ_K = 380, SQZ_C = 22;   // ressort amorti (~12 % de dépassement) : écrasé → léger étirement → repos
+const shakeLabel = () => '📳 Secousse : ' + SHAKE_LEVELS[clamp(Save.shakeLvl | 0, 0, SHAKE_LEVELS.length - 1)].txt;
+const addTrauma = a => { fx.trauma = Math.min(1, fx.trauma + a); };      // les impacts s'additionnent
+const hitStop = s => { fx.stop = Math.min(STOP_MAX, Math.max(fx.stop, s)); };
+const kickSquash = q => { fx.sqz = Math.max(fx.sqz, q); fx.sqzV = 0; };  // écrasement instantané, retour élastique
+function resetFx(){ fx.trauma = 0; fx.stop = 0; fx.sqz = 0; fx.sqzV = 0; }
+function stepSquash(dt){
+  const n = Math.ceil(dt * 120);      // sous-pas ≤ 1/120 s : ressort stable même à 20 fps ; n = 0 pendant le hit-stop
+  for (let i = 0; i < n; i++){
+    const h = dt / n;
+    fx.sqzV += (-SQZ_K * fx.sqz - SQZ_C * fx.sqzV) * h;
+    fx.sqz += fx.sqzV * h;
+  }
+}
 
 function resetBike(){
   bike.x = 160; bike.y = groundY(160) - WR - 6;
@@ -461,17 +538,18 @@ function resetBike(){
   bike.onGround = false; bike.air = false; bike.airTime = 0; bike.totalAir = 0;
   bike.rotAcc = 0; bike.flips = 0; bike.pendFlips = 0; bike.earned = 0; bike.wheelAng = 0;
   bike.nitro = 1; bike.boosting = 0; bike.dead = false; bike.deadT = 0;
-  bike.shake = 0; bike.leanSm = 0;
+  bike.leanSm = 0; resetFx();
+  bike.safeX = undefined; bike.rescues = 0; bike.rescueX = -1e9; bike.stuckT = 0; bike.stuckWarned = false;
+  bike.chain = 0; bike.chainT = 0; bike.bestJump = 0; bike.goalHit = false; bike.missionGain = 0; bike.banked = 0;
   startX = bike.x;
   camX = bike.x; camY = bike.y;
 }
 
 /* ------------------------------ PHYSICS ------------------------------ */
 const GRAV = 1600;
-const K_SPRING = 2700;
-const C_DAMP = 95;
-const FN_MAX = 16000;   // force de suspension max par roue (amortit les gros atterrissages)
-const FLIP_MIN_SPEED = 260;
+const NITRO_CAP = 1.4;   // la nitro pousse à fond jusqu'à `top`, puis de moins en moins jusqu'à top × 1,4 (au lieu d'emballer la vitesse)
+const AIR_TORQUE = 3.0;   // rotation en l'air = spec.rot × pilote × ceci (0,42 au sol). Était 1,7 : un tour exigeait ~1 s de vol, plus que les premières motos n'en font
+const OVERSPEED_DRAG = 6000;   // px/s² de traînée horizontale à 2 × top (quadratique : nulle sous `top`, douce juste au-dessus) → vitesse ≤ ~1,5 × top
 
 function physStep(dt){
   const spec = BIKES[Save.selBike];
@@ -485,9 +563,9 @@ function physStep(dt){
   bike.vy += GRAV * dt;
 
   let cs = Math.cos(bike.a), sn = Math.sin(bike.a);
-  const fx = cs, fy = sn;
+  const dx = cs, dy = sn;
 
-  const fwd = bike.vx * fx + bike.vy * fy;
+  const fwd = bike.vx * dx + bike.vy * dy;
 
   // ---------- moteur ----------
   const thr = In.throttle;
@@ -495,38 +573,44 @@ function physStep(dt){
   if (bike.dead) {
     // plus de contrôle
   } else if (thr > 0 && fwd < top){
-    const F = power * thr * dt * (bike.onGround ? 1 : 0.1);   // pas de vol en poussant
-    bike.vx += fx * F; bike.vy += fy * F;
+    const F = power * thr * dt / mass * (bike.onGround ? 1 : 0.1);   // pas de vol en poussant
+    bike.vx += dx * F; bike.vy += dy * F;
   }
   // ---------- frein / marche arrière ----------
   if (!bike.dead && In.brake > 0){
     if (fwd > 30){
-      const F = power * 1.35 * dt;
-      bike.vx -= fx * F; bike.vy -= fy * F;
+      const F = power * 1.35 * dt / mass;
+      bike.vx -= dx * F; bike.vy -= dy * F;
     } else if (fwd > -top * 0.45){
-      const F = power * 0.75 * dt;
-      bike.vx -= fx * F; bike.vy -= fy * F;
+      const F = power * 0.75 * dt / mass;
+      bike.vx -= dx * F; bike.vy -= dy * F;
     }
   }
   // ---------- nitro ----------
+  // `room` : 1 sous `top`, tombe à 0 au plafond top × NITRO_CAP — la poussée s'éteint d'elle-même, sans frein artificiel
+  const room = clamp((top * NITRO_CAP - fwd) / (top * (NITRO_CAP - 1)), 0, 1);
   if (!bike.dead && In.nitro && bike.nitro > 0.02 && fwd > 60){
     bike.boosting = Math.min(1, bike.boosting + dt * 3);
-    bike.nitro = Math.max(0, bike.nitro - dt * 0.34);
-    const F = power * (0.8 + spec.nitro * 1.8) * dt * (bike.onGround ? 1 : 0.35);
-    bike.vx += fx * F; bike.vy += fy * F;
+    bike.nitro = Math.max(0, bike.nitro - dt * 0.34 * (0.3 + 0.7 * room));   // plafond atteint : la réserve ne fond plus pour rien
+    const F = power * (0.8 + spec.nitro * 1.8) * room * dt / mass * (bike.onGround ? 1 : 0.35);
+    bike.vx += dx * F; bike.vy += dy * F;
     for (let i = 0; i < 2; i++){
-      spawnPart(bike.x - fx * 30 + (Math.random()-0.5)*6, bike.y - fy * 30 + (Math.random()-0.5)*6,
-        -fx*180 + (Math.random()-0.5)*90, -fy*180 + (Math.random()-0.5)*90,
+      spawnPart(bike.x - dx * 30 + (Math.random()-0.5)*6, bike.y - dy * 30 + (Math.random()-0.5)*6,
+        -dx*180 + (Math.random()-0.5)*90, -dy*180 + (Math.random()-0.5)*90,
         0.35 + Math.random()*0.25, 3 + Math.random()*4, spec.col.accent, 80);
     }
   } else {
     bike.boosting = Math.max(0, bike.boosting - dt * 2.2);
   }
-  if (!In.nitro) bike.nitro = Math.min(1, bike.nitro + dt * 0.10);
+  if (!(In.nitro && bike.nitro > 0.02)) bike.nitro = Math.min(1, bike.nitro + dt * 0.10);   // touche tenue sur réservoir vide : ça recharge
+  // ---------- traînée au-delà de `top` : descentes et élan de nitro ne font plus grimper la vitesse sans limite ----------
+  // horizontale seulement : les arcs de saut et les durées de vol restent ceux de la physique d'origine
+  const over = Math.abs(bike.vx) / top - 1;
+  if (over > 0) bike.vx -= Math.sign(bike.vx) * OVERSPEED_DRAG * over * over * dt;
 
   // ---------- rotation joueur ----------
   if (!bike.dead && In.lean !== 0){
-    const strength = spec.rot * ch.rot * (bike.onGround ? 0.42 : 1.7);
+    const strength = spec.rot * ch.rot * (bike.onGround ? 0.42 : AIR_TORQUE);
     bike.av -= In.lean * strength * dt;   // angle négatif = nez en l'air (écran : y vers le bas)
   }
   // ---------- auto-redressement au sol ----------
@@ -623,25 +707,36 @@ function physStep(dt){
     if (bike.air || bike.airTime > 0){
       // atterrissage
       const clean = Math.abs(norm(bike.a - Math.atan2(groundSlope(bike.x), 1))) < 0.9;   // retombée sur les roues
-      if (bike.airTime > 0.45){
+      if (clean) kickSquash(clamp(0.05 + bike.airTime * 0.12, 0.05, 0.2));   // plus on tombe de haut, plus ça s'écrase
+      if (bike.airTime > 0.45 && !bike.dead){
         const gain = Math.floor(bike.airTime * 25);
         Save.credits += gain; bike.earned += gain;
         bike.totalAir += bike.airTime;
         spawnText(bike.x, bike.y - 40, '+' + gain, '#31e6ff');
         Snd.blip(220, 0.09, 'sine');
-        bike.shake = Math.min(10, bike.airTime * 6);
+        addTrauma(clamp(0.3 + bike.airTime * 0.2, 0.35, 0.55));    // palier moyen
+        hitStop(clamp(0.03 + bike.airTime * 0.025, 0.04, 0.06));
         for (let i = 0; i < 18; i++)
           spawnPart(bike.x, groundY(bike.x) - 4, (Math.random()-0.5)*260, -Math.random()*220,
             0.5, 2 + Math.random()*5, world().dust, 320);
       }
-      if (bike.pendFlips > 0){
+      if (bike.pendFlips > 0 && !bike.dead){
         if (clean){
-          const n = bike.pendFlips, gain = 150 * n * n;   // combo : x2 = 600, x3 = 1350…
+          const n = bike.pendFlips;
+          // chaîne : une nouvelle figure dans les 5 s après la précédente → multiplicateur (+25 % par maillon)
+          bike.chain = bike.chainT > 0 ? bike.chain + 1 : 1;
+          bike.chainT = 5;
+          const mult = 1 + 0.25 * (bike.chain - 1);
+          const gain = Math.round(150 * n * n * mult);   // x2 = 600, x3 = 1350… puis × chaîne
           Save.credits += gain; bike.earned += gain; bike.flips += n;
-          spawnText(bike.x, bike.y - 70, 'FIGURE x' + n + '  +' + gain, '#ffd35a');
+          bike.bestJump = Math.max(bike.bestJump, n);
+          bike.nitro = Math.min(1, bike.nitro + 0.25 * n);   // récompense du risque : recharge de nitro
+          spawnText(bike.x, bike.y - 70, 'FIGURE x' + n + '  +' + gain + (bike.chain > 1 ? '  CHAÎNE x' + bike.chain : ''), '#ffd35a');
           Snd.blip(880, 0.18, 'square');
-          bike.shake = 8;
-        } else spawnText(bike.x, bike.y - 70, 'RATÉ !', '#ff5a6b');
+          addTrauma(0.2 + 0.1 * Math.min(n, 3));                      // s'ajoute à l'atterrissage (≈ 0,7 → 1 pour x1 → x3) : reste sous la chute
+          hitStop(0.08 + 0.015 * n);
+          kickSquash(clamp(0.2 + 0.04 * n, 0.2, 0.3));
+        } else { spawnText(bike.x, bike.y - 70, 'RATÉ !', '#ff5a6b'); bike.chain = 0; bike.chainT = 0; }
         bike.pendFlips = 0;
       }
       bike.airTime = 0;
@@ -659,9 +754,11 @@ function physStep(dt){
     Snd.blip(660, 0.12, 'triangle');
   }
 
+  if (bike.chainT > 0){ bike.chainT -= dt; if (bike.chainT <= 0) bike.chain = 0; }
+
   // ---------- vitesse / roues ----------
   const sp = Math.hypot(bike.vx, bike.vy);
-  bike.wheelAng += sp / WR * dt * Math.sign(bike.vx >= 0 ? 1 : 1);
+  bike.wheelAng += sp / WR * dt;
 
   // ---------- chute ----------
   if (!bike.dead){
@@ -682,8 +779,9 @@ function physStep(dt){
 
 function crash(msg){
   if (bike.dead) return;
+  checkObjectives();     // une mission atteinte par le saut fatal compte (checkObjectives ignore la moto morte)
   bike.dead = true; bike.deadT = 0;
-  bike.shake = 16;
+  addTrauma(1);                                                   // palier fort : le plus gros impact du jeu
   const wtr = world().water;
   const wet = !!wtr && groundY(bike.x) > -wtr.level + 2;
   Snd.blip(wet ? 260 : 120, 0.5, wet ? 'sine' : 'sawtooth');
@@ -893,11 +991,13 @@ function drawTerrain(w){
   const bottom = camY + (H * 2.2) / z;
 
   const surf = new Path2D();
-  surf.moveTo(i0 * STEP, -Terrain.E[i0]);
+  const xs = left < 0 ? left : i0 * STEP;          // à gauche du départ le sol reste plat, comme dans la physique
+  surf.moveTo(xs, -Terrain.E[i0]);
+  if (xs < i0 * STEP) surf.lineTo(i0 * STEP, -Terrain.E[i0]);
   for (let i = i0 + 1; i <= i1; i++) surf.lineTo(i * STEP, -Terrain.E[i]);
   const body = new Path2D(surf);
   body.lineTo(i1 * STEP, bottom);
-  body.lineTo(i0 * STEP, bottom);
+  body.lineTo(xs, bottom);
   body.closePath();
 
   // terre : dégradé + strates
@@ -1213,7 +1313,7 @@ function renderBike(g, C, ch, wheelAng, lean, t, dead){
 }
 
 /* ------------------------------ GAME RENDER ------------------------------ */
-function renderGame(dt){
+function renderGame(dt, sdt){     // dt = temps réel, sdt = temps de simulation (0 pendant le hit-stop)
   const spec = BIKES[Save.selBike];
   const ch = CHARS[Save.selChar];
 
@@ -1228,9 +1328,12 @@ function renderGame(dt){
   const targetZoom = sizeZ * (1 - clamp(sp / 2400, 0, 0.32));
   camZoom = lerp(camZoom, targetZoom, 1 - Math.exp(-3 * dt));
 
-  const shake = bike.shake;
-  bike.shake *= Math.exp(-6 * dt);
-  const shx = (Math.random() - 0.5) * shake, shy = (Math.random() - 0.5) * shake;
+  // secousse à trauma : amplitude = trauma² × option, bruit lisse (sinus incommensurables) — pas de hasard par frame
+  fx.t += dt;
+  fx.trauma = Math.max(0, fx.trauma - SHAKE_DECAY * dt);     // temps réel : la secousse continue pendant le hit-stop
+  const amp = fx.trauma * fx.trauma * SHAKE_MAX * SHAKE_LEVELS[clamp(Save.shakeLvl | 0, 0, SHAKE_LEVELS.length - 1)].k;
+  const shx = amp * (0.6 * Math.sin(fx.t * 41) + 0.4 * Math.sin(fx.t * 77 + 1.3));
+  const shy = amp * (0.6 * Math.sin(fx.t * 47 + 2.1) + 0.4 * Math.sin(fx.t * 83 + 4.2));
 
   const bgY = (camY - 0) * 0.10;
   const w = world();
@@ -1253,6 +1356,7 @@ function renderGame(dt){
 
   // --- terrain ---
   drawTerrain(w);
+  drawFinish();
 
   // --- ombre ---
   const gy = groundY(bike.x);
@@ -1288,10 +1392,13 @@ function renderGame(dt){
 
   // --- moto ---
   const sq = 1 - bike.squash * 0.10;
-  bike.squash *= Math.exp(-9 * dt);
+  bike.squash *= Math.exp(-9 * sdt);
+  stepSquash(sdt);                       // gelé pendant le hit-stop : la frame d'impact reste écrasée
   ctx.save();
   ctx.translate(bike.x, bike.y);
   ctx.rotate(bike.a);
+  // squash & stretch d'événement, ancré au contact des roues (y = WR) pour que la moto ne décolle pas du sol
+  ctx.translate(0, WR); ctx.scale(1 + fx.sqz * 0.5, 1 - fx.sqz); ctx.translate(0, -WR);
   ctx.scale(1, sq);
   renderBike(ctx, spec.col, ch, bike.wheelAng, bike.leanSm, performance.now() / 1000, bike.dead);
   ctx.restore();
@@ -1352,6 +1459,25 @@ function renderGame(dt){
   drawSpeedo(sp, spec);
 }
 
+// ligne d'arrivée du monde courant : deux poteaux et un bandeau à damier, visibles quand on s'en approche
+function drawFinish(){
+  const wi = clamp(Save.selWorld | 0, 0, WORLDS.length - 1);
+  const x = startX + WORLD_GOALS[wi] * 10;
+  if (x < camX - (W * 0.55) / camZoom - 100 || x > camX + (W * 0.65) / camZoom + 100) return;   // hors champ
+  const half = 70, h = 170, yl = groundY(x - half), yr = groundY(x + half), top = Math.min(yl, yr) - h;
+  ctx.save();
+  ctx.lineWidth = 7; ctx.lineCap = 'round'; ctx.strokeStyle = '#d8e4f2';
+  ctx.beginPath(); ctx.moveTo(x - half, yl + 6); ctx.lineTo(x - half, top); ctx.moveTo(x + half, yr + 6); ctx.lineTo(x + half, top); ctx.stroke();
+  const cells = 14, cw = (half * 2) / cells;
+  for (let i = 0; i < cells; i++) for (let j = 0; j < 2; j++){
+    ctx.fillStyle = (i + j) % 2 ? '#10131c' : '#f4f8ff';
+    ctx.fillRect(x - half + i * cw, top + j * cw, cw, cw);
+  }
+  ctx.fillStyle = '#ffd35a'; ctx.font = '900 16px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('ARRIVÉE  ' + WORLD_GOALS[wi] + ' m', x, top - 10);
+  ctx.restore();
+}
+
 function updateEffects(dt){
   for (let i = parts.length - 1; i >= 0; i--){
     const p = parts[i];
@@ -1369,9 +1495,10 @@ function updateEffects(dt){
 }
 
 function drawSpeedo(sp, spec){
-  const cx = W - 78, cy = H - 82, r = 54;
+  // en tactile, les boutons occupent le bas à droite : la jauge passe en haut à droite, sous le bouton pause
+  const cx = isTouch ? W - 70 : W - 78, cy = isTouch ? 120 : H - 82, r = 54;
   const top = spec.top * (world().perf || 1);
-  const frac = clamp(sp / (top * 1.15), 0, 1);
+  const frac = clamp(sp / (top * NITRO_CAP), 0, 1);   // l'aiguille finit en bout de cadran au plafond nitro
   ctx.save();
   ctx.translate(cx, cy);
   ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU);
@@ -1401,15 +1528,123 @@ function drawSpeedo(sp, spec){
   ctx.restore();
 }
 
+/* ------------------------------ MISSIONS & OBJECTIF ------------------------------ */
+const runDist = () => Math.max(0, (bike.x - startX) / 10);
+const WORLD_GOALS = [1000, 1500, 2000];   // distance (m) à franchir pour « finir » chaque monde
+// Ce que la moto choisie peut réellement faire — mesuré en simulation (cf. ANALYSE_GAME_DEVELOPER.md), pas deviné :
+//  - le meilleur saut d'une course de 1 000 m vaut en médiane ~0,22 + 0,00066 × vitesse max effective (nitro coupé) ;
+//  - n tours d'affilée demandent ~3,85 × (1 + 0,6·(n−1)) / √(rot × pilote × AIR_TORQUE) s de vol avec un contrôleur optimal.
+const FLIP_HUMAN = 1.15;   // un joueur n'est pas un contrôleur optimal
+function bikeProfile(){
+  const spec = BIKES[Save.selBike], ch = CHARS[Save.selChar];
+  const topEff = spec.top * (world().perf || 1);
+  const rot = spec.rot * ch.rot * AIR_TORQUE;
+  return {
+    tier: Math.min(5, Math.floor(Math.log2(1 + spec.price / 700))),   // 0 (Rusty) … 5 (haut de gamme)
+    bestAir: 0.22 + 0.00066 * topEff,
+    airPerKm: 1.2 + 0.0015 * topEff,                                   // temps de vol cumulé par km, volontairement prudent
+    flipAir: n => FLIP_HUMAN * 3.85 * (1 + 0.6 * (n - 1)) / Math.sqrt(rot)
+  };
+}
+
+// w = poids de la récompense (plus dur → mieux payé) ; ok(palier, cible, profil) = la moto peut-elle le faire ?
+const MISSION_KINDS = [
+  { id:'dist',  w:1.0, t:[400, 800, 1200], scale:true,  ok:() => true,
+    txt:n => 'Parcourir ' + n + ' m', get:runDist },
+  { id:'flips', w:1.5, t:[1, 3, 6],        scale:false, ok:(i, n, P) => P.bestAir >= (0.93 + 0.1 * i) * P.flipAir(1),
+    txt:n => 'Réussir ' + n + ' figure' + (n > 1 ? 's' : ''), get:() => bike.flips },
+  { id:'air',   w:1.2, t:[3, 8, 15],       scale:false, ok:(i, n, P) => n <= 3.5 * P.airPerKm,       // faisable en ~3 km de course
+    txt:n => n + ' s en l’air au total', get:() => bike.totalAir },
+  { id:'combo', w:2.0, t:[2, 3, 4],        scale:false, ok:(i, n, P) => P.bestAir >= 0.93 * P.flipAir(n),
+    txt:n => n + ' tours dans un seul saut', get:() => bike.bestJump }
+];
+let missions = [];
+let chainEl = null, chainShown = 0;
+
+function newMissions(){
+  const wi = Save.selWorld | 0, P = bikeProfile();
+  const pool = [];
+  for (const k of MISSION_KINDS) k.t.forEach((base, i) => {
+    const target = Math.round(base * (k.scale ? (1 + 0.5 * wi) * (1 + 0.1 * P.tier) : 1));
+    if (!k.ok(i, target, P)) return;                                  // jamais de mission que la moto ne peut pas tenir
+    pool.push({ k, target, reward: Math.round(200 * (i + 1) * k.w * (1 + 0.15 * P.tier) * (1 + 0.5 * wi)), done:false });
+  });
+  for (let i = pool.length - 1; i > 0; i--){                          // mélange de Fisher–Yates (le tri aléatoire est biaisé)
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const picked = [];
+  for (const m of pool) if (picked.length < 3 && !picked.some(p => p.k === m.k)) picked.push(m);   // 3 types différents si possible…
+  for (const m of pool) if (picked.length < 3 && !picked.includes(m)) picked.push(m);             // …sinon on complète
+  missions = picked;
+}
+
+// n'écrit dans le DOM que si le texte change : réécrire un texte identique relance quand même style et mise en page
+const setText = (el, txt) => { if (el._t !== txt){ el._t = txt; el.textContent = txt; } };
+
+// structure du HUD des missions construite une fois par course ; ensuite seuls les textes qui changent sont touchés
+function buildMissionsHud(){
+  const host = $('hudMissions'); host.innerHTML = '';
+  for (const m of missions){
+    m.row = document.createElement('div'); m.row.className = 'mission';
+    m.a = document.createElement('span'); m.a.textContent = m.k.txt(m.target);
+    m.b = document.createElement('b');
+    m.row.appendChild(m.a); m.row.appendChild(m.b); host.appendChild(m.row);
+  }
+  chainEl = document.createElement('div'); chainEl.className = 'chain'; chainShown = 0;
+}
+
+function checkObjectives(){
+  if (bike.dead) return;
+  for (const m of missions){
+    if (m.done || m.k.get() < m.target) continue;
+    m.done = true;
+    Save.credits += m.reward; bike.earned += m.reward; bike.missionGain += m.reward;
+    Save.missionsDone++;
+    Save.store();
+    toast('MISSION ✓  +' + m.reward);
+    Snd.blip(990, 0.22, 'square');
+  }
+  const wi = clamp(Save.selWorld | 0, 0, WORLDS.length - 1);
+  if (!bike.goalHit && runDist() >= WORLD_GOALS[wi]){
+    bike.goalHit = true;
+    const first = !Save.cleared.includes(wi);
+    const bonus = (first ? 1500 : 250) * (wi + 1);
+    if (first) Save.cleared.push(wi);
+    Save.credits += bonus; bike.earned += bonus; bike.missionGain += bonus;
+    Save.store();
+    toast((first ? 'MONDE TERMINÉ !' : 'LIGNE D’ARRIVÉE !') + '  +' + bonus + (first && UNLOCK_WORLDS && wi + 1 < WORLDS.length ? '  •  MONDE ' + (wi + 2) + ' DÉBLOQUÉ' : ''));
+    Snd.blip(1200, 0.3, 'triangle');
+    addTrauma(0.4);
+  }
+  // HUD des missions : progression, case cochée et chaîne, sans reconstruire de HTML
+  for (const m of missions){
+    if (!m.b) continue;
+    setText(m.b, m.done ? '+' + m.reward : Math.min(m.target, Math.floor(m.k.get())) + '/' + m.target);
+    if (m.done && !m.row.classList.contains('done')){ m.row.classList.add('done'); m.a.textContent = '✓ ' + m.k.txt(m.target); }
+  }
+  if (chainEl && bike.chain !== chainShown){
+    chainShown = bike.chain;
+    if (bike.chain > 1){
+      chainEl.textContent = 'CHAÎNE x' + bike.chain + ' · +' + (25 * (bike.chain - 1)) + '%';
+      if (!chainEl.parentNode) $('hudMissions').appendChild(chainEl);
+    } else if (chainEl.parentNode) chainEl.parentNode.removeChild(chainEl);
+  }
+}
+
 /* ------------------------------ HUD / UI ------------------------------ */
 function fmtM(px){ return Math.max(0, Math.round(px / 10)) + ' m'; }
 
+let hudProgShown = -1;
 function updateHUD(){
-  $('hudCredits').textContent = Save.credits;
-  const sp = Math.hypot(bike.vx, bike.vy);
-  $('hudSpeed').textContent = Math.round(sp / 3);
-  $('hudDist').textContent = fmtM(bike.x - startX);
-  $('hudRecord').textContent = 'Record : ' + Save.best + ' m • ' + world().short;
+  setText($('hudCredits'), Save.credits);
+  setText($('hudSpeed'), Math.round(Math.hypot(bike.vx, bike.vy) / 3));
+  setText($('hudDist'), fmtM(bike.x - startX));
+  const wi = clamp(Save.selWorld | 0, 0, WORLDS.length - 1);
+  setText($('hudRecord'), 'Record : ' + Save.bests[wi] + ' m • ' + world().short +
+    ' • Objectif : ' + WORLD_GOALS[wi] + ' m' + (Save.cleared.includes(wi) ? ' ✔' : ''));
+  const prog = Math.min(100, Math.floor(100 * runDist() / WORLD_GOALS[wi]));
+  if (prog !== hudProgShown){ hudProgShown = prog; $('hudProg').style.width = prog + '%'; }
 }
 
 let msgTimer = 0;
@@ -1422,8 +1657,8 @@ function toast(txt){
   msgTimer = 1.1;
 }
 
-function show(id){ [ 'menu','shop','over' ].forEach(k => $(k).classList.toggle('hidden', k !== id)); }
-function hideAll(){ [ 'menu','shop','over' ].forEach(k => $(k).classList.add('hidden')); }
+function show(id){ [ 'menu','shop','over','pause' ].forEach(k => $(k).classList.toggle('hidden', k !== id)); }
+function hideAll(){ [ 'menu','shop','over','pause' ].forEach(k => $(k).classList.add('hidden')); }
 
 /* ---------- SHOP ---------- */
 let shopMode = 'bikes';
@@ -1432,7 +1667,14 @@ function openShop(mode){
   $('shopTitle').textContent = mode === 'bikes' ? 'GARAGE MOTO' : 'PILOTES';
   $('shopCredits').textContent = Save.credits;
   show('shop');
-  buildShop();
+  buildShop(false);
+}
+// après un achat / équipement : on met à jour la grille sans la remonter en haut
+function refreshShop(){ $('shopCredits').textContent = Save.credits; buildShop(true); }
+function shopToast(txt){
+  const el = $('shopToast');
+  el.textContent = txt;
+  el.classList.remove('show'); void el.offsetWidth; el.classList.add('show');
 }
 
 function statRow(label, v, max, cls){
@@ -1440,8 +1682,9 @@ function statRow(label, v, max, cls){
   return `<div class="stat ${cls}"><span>${label}</span><div class="bar"><div class="fill" style="width:${pct}%"></div></div></div>`;
 }
 
-function buildShop(){
+function buildShop(keepScroll){
   const grid = $('shopGrid');
+  const scroll = keepScroll ? grid.scrollTop : 0;
   grid.innerHTML = '';
   const list = shopMode === 'bikes' ? BIKES : CHARS;
   const owned = shopMode === 'bikes' ? Save.ownedBikes : Save.ownedChars;
@@ -1458,6 +1701,9 @@ function buildShop(){
     if (shopMode === 'bikes'){
       stats = statRow('PUISSANCE', item.power, 6800, 'power') +
               statRow('VITESSE', item.top, 2000, '') +
+              statRow('NITRO', item.nitro, 0.9, 'power') +
+              statRow('CONTRÔLE', item.rot - 6, 3.6, '') +
+              statRow('LÉGÈRETÉ', 1.12 - item.mass, 0.26, 'grip') +
               statRow('ACCROCHE', item.grip, 1.35, 'grip');
     } else {
       stats = statRow('ACCROCHE', item.grip, 1.2, 'grip') +
@@ -1479,6 +1725,7 @@ function buildShop(){
     grid.appendChild(card);
     drawPreview(card.querySelector('canvas'), item, shopMode, i);
   });
+  grid.scrollTop = scroll;
 }
 
 function drawPreview(canvas, item, mode, idx){
@@ -1541,44 +1788,90 @@ function drawCharPortrait(c, ch){
 /* ------------------------------ FLOW ------------------------------ */
 let state = 'menu';
 
+const WORLD_TIPS = ['Idéal pour débuter', 'Tous niveaux', 'Conseillé : Pocket Rocket ou mieux'];
+const worldUnlocked = i => !UNLOCK_WORLDS || i === 0 || Save.cleared.includes(i - 1);
 function updateWorldButtons(){
   document.querySelectorAll('.world-btn').forEach(b => {
-    b.classList.toggle('selected', +b.dataset.world === Save.selWorld);
+    const i = +b.dataset.world, ok = worldUnlocked(i);
+    b.classList.toggle('selected', i === Save.selWorld);
+    b.classList.toggle('locked', !ok);
+    const rec = b.querySelector('.rec');
+    if (rec) rec.textContent = ok ? WORLD_TIPS[i] : '🔒 Termine le Monde ' + i + ' (' + WORLD_GOALS[i - 1] + ' m)';
   });
 }
 
 function goMenu(){
-  state = 'menu';
+  state = 'menu'; paused = false;
   hideAll(); show('menu');
   $('touch').classList.add('hidden');
   $('hud').classList.add('hidden');
   $('menuCredits').textContent = Save.credits;
   $('menuBest').textContent = Save.best + ' m';
+  $('menuMiss').textContent = Save.missionsDone;
+  $('soundBtn').textContent = Snd.on ? '🔊 Son' : '🔇 Muet';
+  $('shakeBtn').textContent = shakeLabel();
   updateWorldButtons();
   Save.store();
   Snd.engine(0, 0, false);
 }
 
 function startGame(){
+  if (!worldUnlocked(Save.selWorld | 0)) Save.selWorld = 0;
+  In.restart = false;
   runSeed = (Date.now() ^ (Math.random() * 1e9)) >>> 0;
   newTrack(runSeed);
   resetBike();
+  newMissions(); buildMissionsHud(); hudProgShown = -1;
   parts.length = 0; floats.length = 0;
-  state = 'play';
+  state = 'play'; paused = false;
   hideAll();
   $('hud').classList.remove('hidden');
-  $('touch').classList.toggle('hidden', !('ontouchstart' in window));
+  $('hud').classList.toggle('touch', isTouch);
+  $('touch').classList.toggle('hidden', !isTouch);
   Snd.init(); Snd.resume();
   toast('GO !');
 }
 
-function endRun(msg){
-  state = 'over';
-  const dist = Math.max(0, Math.round((bike.x - startX) / 10));
+// encaisse la distance déjà parcourue quand la page se cache ou se ferme : une course interrompue ne perd plus ses gains.
+// `bike.banked` évite de payer deux fois si la course reprend ensuite (endRun ne verse que le reste).
+function noteBest(dist){
+  const wi = clamp(Save.selWorld | 0, 0, WORLDS.length - 1);
   if (dist > Save.best) Save.best = dist;
+  if (dist > Save.bests[wi]) Save.bests[wi] = dist;
+}
+function bankRun(){
+  if (state !== 'play') return;
+  const dist = Math.max(0, Math.round((bike.x - startX) / 10));
+  noteBest(dist);
+  const part = Math.floor(dist / 2) - bike.banked;
+  if (part > 0){ Save.credits += part; bike.banked += part; }
+  Save.store();
+}
+
+let paused = false;
+function setPause(on){
+  if (on === paused || state !== 'play' || (on && bike.dead)) return;
+  paused = on;
+  $('pause').classList.toggle('hidden', !on);
+  for (const k in keys) keys[k] = false;            // aucune touche ne reste « collée » à la reprise
+  for (const k in touchKeys) touchKeys[k] = false;
+  if (on){ Snd.engine(0, 0, false); bankRun(); }
+}
+// onglet masqué (changement d'appli sur mobile) : pause + encaissement ; fermeture de page : encaissement
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  if (state === 'play') setPause(true);
+  bankRun(); Save.store();
+});
+window.addEventListener('pagehide', () => { bankRun(); Save.store(); });
+
+function endRun(msg){
+  state = 'over'; paused = false;
+  const dist = Math.max(0, Math.round((bike.x - startX) / 10));
+  noteBest(dist);
   const distGain = Math.floor(dist / 2);
-  Save.credits += distGain;
-  const gain = distGain + bike.earned;   // air + figures déjà crédités en course
+  Save.credits += distGain - bike.banked;   // la part déjà encaissée par bankRun n'est pas payée deux fois
+  const gain = distGain + bike.earned;      // air + figures déjà crédités en course
   Save.store();
 
   $('overTitle').textContent = msg || 'FIN DE COURSE';
@@ -1586,7 +1879,23 @@ function endRun(msg){
   $('rWorld').textContent = world().short + ' • ' + world().name;
   $('rAir').textContent = bike.totalAir.toFixed(1) + ' s';
   $('rFlips').textContent = bike.flips;
+  $('rMiss').textContent = missions.filter(m => m.done).length + ' / ' + missions.length +
+    (bike.goalHit ? ' • arrivée ✔' : '');
   $('rGain').textContent = '+' + gain;
+  // détail des gains, état des missions et prochain achat : le but du jeu devient lisible
+  $('rDetail').textContent = 'Distance +' + distGain + '  •  Vol et figures +' + Math.max(0, bike.earned - bike.missionGain) +
+    '  •  Missions et arrivée +' + bike.missionGain;
+  $('rMissList').innerHTML = missions.map(m => m.done
+    ? '<div class="rm done"><span>✓ ' + m.k.txt(m.target) + '</span><b>+' + m.reward + '</b></div>'
+    : '<div class="rm"><span>' + m.k.txt(m.target) + '</span><b>' + Math.min(m.target, Math.floor(m.k.get())) + '/' + m.target + '</b></div>').join('');
+  const nextIdx = BIKES.map((_, i) => i).filter(i => !Save.ownedBikes.includes(i)).sort((a, b) => BIKES[a].price - BIKES[b].price)[0];
+  if (nextIdx === undefined){
+    $('rNext').textContent = 'Garage complet !'; $('rNextBar').style.width = '100%';
+  } else {
+    const nb = BIKES[nextIdx];
+    $('rNext').textContent = Save.credits >= nb.price ? 'Prochain achat : ' + nb.name + ' — disponible !' : 'Prochain achat : ' + nb.name + ' — encore ' + (nb.price - Save.credits) + ' ⬤';
+    $('rNextBar').style.width = Math.round(100 * clamp(Save.credits / nb.price, 0, 1)) + '%';
+  }
   $('hud').classList.add('hidden');
   $('touch').classList.add('hidden');
   show('over');
@@ -1604,14 +1913,16 @@ function buy(kind, idx){
   if (kind === 'bikes') Save.selBike = idx; else Save.selChar = idx;
   Save.store();
   Snd.blip(880, 0.16, 'square');
-  toast('Acheté : ' + item.name);
-  openShop(kind);
+  shopToast('Acheté : ' + item.name);
+  refreshShop();
 }
 function select(kind, idx){
+  const list = kind === 'bikes' ? BIKES : CHARS;
   if (kind === 'bikes') Save.selBike = idx; else Save.selChar = idx;
   Save.store();
   Snd.blip(520, 0.1, 'sine');
-  openShop(kind);
+  shopToast('Équipé : ' + list[idx].name);
+  refreshShop();
 }
 
 document.addEventListener('click', e => {
@@ -1625,14 +1936,25 @@ document.addEventListener('click', e => {
     else if (a === 'shop-bikes') openShop('bikes');
     else if (a === 'shop-chars') openShop('chars');
     else if (a === 'world'){
-      Save.selWorld = clamp(+b.dataset.world || 0, 0, WORLDS.length - 1);
+      const wi = clamp(+b.dataset.world || 0, 0, WORLDS.length - 1);
+      if (!worldUnlocked(wi)){ Snd.blip(180, 0.15, 'square'); return; }
+      Save.selWorld = wi;
       Save.store();
       updateWorldButtons();
       Snd.blip(700, 0.12, 'sine');
     }
+    else if (a === 'pause') setPause(true);
+    else if (a === 'resume') setPause(false);
+    else if (a === 'quit-run'){ setPause(false); endRun('COURSE TERMINÉE'); }
     else if (a === 'sound'){
       const on = Snd.toggle();
+      Save.sound = on; Save.store();
       b.textContent = on ? '🔊 Son' : '🔇 Muet';
+    }
+    else if (a === 'shake'){
+      Save.shakeLvl = ((Save.shakeLvl | 0) + 1) % SHAKE_LEVELS.length;
+      Save.store();
+      b.textContent = shakeLabel();
     }
   } else if (b.dataset.buy){
     const [k, i] = b.dataset.buy.split(':');
@@ -1666,15 +1988,24 @@ function loop(now){
   let dt = (now - last) / 1000; last = now;
   if (dt > 0.05) dt = 0.05;
 
-  if (state === 'play'){
-    if (In.restart){ In.restart = false; if (!bike.dead) { resetBike(); parts.length = 0; floats.length = 0; toast('Reset'); } }
+  if (state === 'play' && paused){
+    Snd.engine(0, 0, false);       // pause : rien n'avance, le dernier cadre reste affiché sous l'écran de pause
+  } else if (state === 'play'){
+    if (In.restart){ In.restart = false; if (!bike.dead) { bankRun(); resetBike(); parts.length = 0; floats.length = 0; toast('Nouvelle tentative'); } }   // la distance déjà parcourue est encaissée
     readInput();
-    const steps = clamp(Math.ceil(dt / (1 / 240)), 1, 8);
-    const h = dt / steps;
-    for (let i = 0; i < steps; i++) physStep(h);
-    updateEffects(dt);
-    bike.leanSm = lerp(bike.leanSm, In.lean, 1 - Math.exp(-8 * dt));
-    renderGame(dt);
+    // hit-stop : simulation figée en temps réel (le rendu, la secousse et les entrées continuent)
+    const frozen = fx.stop > 0;
+    if (frozen) fx.stop -= dt;
+    const sdt = frozen ? 0 : dt;
+    if (!frozen){
+      const steps = clamp(Math.ceil(dt / (1 / 240)), 1, 8);
+      const h = dt / steps;
+      for (let i = 0; i < steps; i++) physStep(h);
+      updateEffects(dt);
+      checkObjectives();
+    }
+    bike.leanSm = lerp(bike.leanSm, In.lean, 1 - Math.exp(-8 * sdt));
+    renderGame(dt, sdt);
     updateHUD();
 
     const sp = Math.hypot(bike.vx, bike.vy);
@@ -1685,11 +2016,15 @@ function loop(now){
       if (msgTimer <= 0) $('hudMsg').classList.remove('show');
     }
     // blocage : repêchage automatique
-    const stuck = !bike.dead && bike.onGround && Math.hypot(bike.vx, bike.vy) < 40 && bike.x > startX + 300;
+    // le joueur doit pousser (gaz tenu) : s'arrêter volontairement ne déclenche plus de téléportation
+    const stuck = !bike.dead && bike.onGround && In.throttle > 0 && Math.hypot(bike.vx, bike.vy) < 40 && bike.x > startX + 300;
     bike.stuckT = stuck ? (bike.stuckT || 0) + dt : 0;
     if (bike.stuckT > 1.5 && !bike.stuckWarned){ bike.stuckWarned = true; toast('Bloqué…'); }
+    if (bike.x > bike.rescueX + 400) bike.rescues = 0;           // on a progressé depuis le dernier repêchage
     if (bike.stuckT > 2.6){
-      if (bike.safeX !== undefined){
+      if (bike.rescues >= 3) crash('Bloqué !');                  // 3 repêchages au même endroit : la course s'arrête
+      else if (bike.safeX !== undefined){
+        bike.rescues++; bike.rescueX = bike.safeX;
         bike.x = bike.safeX; bike.y = bike.safeY; bike.a = bike.safeA;
         bike.vx = 0; bike.vy = 0; bike.av = 0; bike.squash = 0;
         toast('Repêchage !');

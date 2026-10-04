@@ -27,11 +27,14 @@
     </div>
   </div>
   <div class="hud-record" id="hudRecord">Record : 0 m</div>
+  <div class="hud-progress"><i id="hudProg"></i></div>
+  <div class="hud-missions" id="hudMissions"></div>
   <div class="hud-msg" id="hudMsg"></div>
+  <button class="hud-pause" id="pauseBtn" data-act="pause" aria-label="Pause">❚❚</button>
   <div class="hud-help">
     <b>→</b> avancer &nbsp;•&nbsp; <b>←</b> freiner / reculer &nbsp;•&nbsp;
     <b>↑</b> rotation arrière &nbsp;•&nbsp; <b>↓</b> rotation avant &nbsp;•&nbsp;
-    <b>Espace</b> nitro &nbsp;•&nbsp; <b>R</b> recommencer
+    <b>Espace</b> nitro &nbsp;•&nbsp; <b>P</b> pause &nbsp;•&nbsp; <b>R</b> recommencer
   </div>
 </div>
 
@@ -53,19 +56,22 @@
 
     <div class="menu-worlds">
       <button class="world-btn selected" data-act="world" data-world="0">
-        <b>MONDE 1</b><span>Dunes • Soleil couchant</span>
+        <b>MONDE 1</b><span>Dunes • Soleil couchant</span><span class="rec"></span>
       </button>
       <button class="world-btn" data-act="world" data-world="1">
-        <b>MONDE 2</b><span>Néon City • Nuit cyber • motos -10 %</span>
+        <b>MONDE 2</b><span>Néon City • Nuit cyber • motos -10 %</span><span class="rec"></span>
       </button>
       <button class="world-btn" data-act="world" data-world="2">
-        <b>MONDE 3</b><span>Lacs • Vallée verte • motos -25 %</span>
+        <b>MONDE 3</b><span>Lacs • Vallée verte • motos -25 %</span><span class="rec"></span>
       </button>
     </div>
 
     <div class="menu-foot">
-      <div class="muted">Meilleure distance : <b id="menuBest">0 m</b></div>
-      <button class="btn tiny" id="soundBtn" data-act="sound">🔊 Son</button>
+      <div class="muted">Meilleure distance : <b id="menuBest">0 m</b> &nbsp;•&nbsp; Missions réussies : <b id="menuMiss">0</b></div>
+      <div class="foot-btns">
+        <button class="btn tiny" id="soundBtn" data-act="sound">🔊 Son</button>
+        <button class="btn tiny" id="shakeBtn" data-act="shake">📳 Secousse : Normale</button>
+      </div>
     </div>
   </div>
 </div>
@@ -80,6 +86,7 @@
     </header>
     <div class="shop-grid" id="shopGrid"></div>
   </div>
+  <div class="shop-toast" id="shopToast"></div>
 </div>
 
 <!-- ===== GAME OVER ===== -->
@@ -88,15 +95,30 @@
     <h2 id="overTitle">CHUTE !</h2>
     <div class="results">
       <div class="res-row"><span>Distance</span><b id="rDist">0 m</b></div>
-      <div class="res-row"><span>Monde</span><b id="rWorld">Monde 1</b></div>
+      <div class="res-row world"><span>Monde</span><b id="rWorld">Monde 1</b></div>
       <div class="res-row"><span>Temps de vol</span><b id="rAir">0.0 s</b></div>
       <div class="res-row"><span>Figures</span><b id="rFlips">0</b></div>
+      <div class="res-row"><span>Missions</span><b id="rMiss">0 / 3</b></div>
       <div class="res-row total"><span>Crédits gagnés</span><b id="rGain">+0</b></div>
     </div>
+    <div class="gain-detail" id="rDetail"></div>
+    <div class="miss-list" id="rMissList"></div>
+    <div class="next-buy"><span id="rNext"></span><div class="next-bar"><i id="rNextBar"></i></div></div>
     <div class="over-buttons">
       <button class="btn primary" data-act="play">↻&nbsp; REJOUER</button>
       <button class="btn" data-act="shop-bikes">🏍&nbsp; GARAGE</button>
       <button class="btn" data-act="menu">☰&nbsp; MENU</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== PAUSE ===== -->
+<div id="pause" class="overlay hidden">
+  <div class="over-inner">
+    <h2>PAUSE</h2>
+    <div class="over-buttons">
+      <button class="btn primary" data-act="resume">▶&nbsp; REPRENDRE</button>
+      <button class="btn" data-act="quit-run">■&nbsp; TERMINER LA COURSE</button>
     </div>
   </div>
 </div>
