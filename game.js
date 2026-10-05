@@ -462,7 +462,7 @@ window.addEventListener('keydown', e => {
   keys[keyId(e)] = true;
   if (e.repeat) return;
   if (state === 'play'){
-    if (e.key === 'r' || e.key === 'R') In.restart = true;
+    if (!paused && (e.key === 'r' || e.key === 'R')) In.restart = true;   // en pause, R ne doit pas relancer à la reprise
     if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') setPause(!paused);
   } else if (state === 'over' && !$('over').classList.contains('hidden') &&      // l'écran de fin doit être affiché (pas la boutique ouverte depuis lui)
              (e.key === 'Enter' || e.key === ' ' || e.key === 'r' || e.key === 'R')){
@@ -537,7 +537,7 @@ function resetBike(){
   bike.a = 0; bike.vx = 0; bike.vy = 0; bike.av = 0;
   bike.onGround = false; bike.air = false; bike.airTime = 0; bike.totalAir = 0;
   bike.rotAcc = 0; bike.flips = 0; bike.pendFlips = 0; bike.earned = 0; bike.wheelAng = 0;
-  bike.nitro = 1; bike.boosting = 0; bike.dead = false; bike.deadT = 0;
+  bike.nitro = 1; bike.nitroLock = false; bike.boosting = 0; bike.dead = false; bike.deadT = 0;
   bike.leanSm = 0; resetFx();
   bike.safeX = undefined; bike.rescues = 0; bike.rescueX = -1e9; bike.stuckT = 0; bike.stuckWarned = false;
   bike.chain = 0; bike.chainT = 0; bike.bestJump = 0; bike.goalHit = false; bike.missionGain = 0; bike.banked = 0;
@@ -589,7 +589,11 @@ function physStep(dt){
   // ---------- nitro ----------
   // `room` : 1 sous `top`, tombe à 0 au plafond top × NITRO_CAP — la poussée s'éteint d'elle-même, sans frein artificiel
   const room = clamp((top * NITRO_CAP - fwd) / (top * (NITRO_CAP - 1)), 0, 1);
-  if (!bike.dead && In.nitro && bike.nitro > 0.02 && fwd > 60){
+  // réservoir vidé : nitro verrouillée jusqu'à 25 % ou relâchement de la touche (sinon elle se rallume à 2 % sans fin)
+  if (bike.nitro <= 0.02) bike.nitroLock = true;
+  else if (bike.nitroLock && (!In.nitro || bike.nitro >= 0.25)) bike.nitroLock = false;
+  const wantNitro = In.nitro && !bike.nitroLock;
+  if (!bike.dead && wantNitro && fwd > 60){
     bike.boosting = Math.min(1, bike.boosting + dt * 3);
     bike.nitro = Math.max(0, bike.nitro - dt * 0.34 * (0.3 + 0.7 * room));   // plafond atteint : la réserve ne fond plus pour rien
     const F = power * (0.8 + spec.nitro * 1.8) * room * dt / mass * (bike.onGround ? 1 : 0.35);
@@ -602,7 +606,7 @@ function physStep(dt){
   } else {
     bike.boosting = Math.max(0, bike.boosting - dt * 2.2);
   }
-  if (!(In.nitro && bike.nitro > 0.02)) bike.nitro = Math.min(1, bike.nitro + dt * 0.10);   // touche tenue sur réservoir vide : ça recharge
+  if (!wantNitro) bike.nitro = Math.min(1, bike.nitro + dt * 0.10);   // touche tenue sur réservoir vide : ça recharge
   // ---------- traînée au-delà de `top` : descentes et élan de nitro ne font plus grimper la vitesse sans limite ----------
   // horizontale seulement : les arcs de saut et les durées de vol restent ceux de la physique d'origine
   const over = Math.abs(bike.vx) / top - 1;
@@ -1869,7 +1873,7 @@ function endRun(msg){
   state = 'over'; paused = false;
   const dist = Math.max(0, Math.round((bike.x - startX) / 10));
   noteBest(dist);
-  const distGain = Math.floor(dist / 2);
+  const distGain = Math.max(Math.floor(dist / 2), bike.banked);   // moto qui a reculé après un encaissement : jamais de crédits retirés
   Save.credits += distGain - bike.banked;   // la part déjà encaissée par bankRun n'est pas payée deux fois
   const gain = distGain + bike.earned;      // air + figures déjà crédités en course
   Save.store();
