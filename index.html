@@ -32,8 +32,8 @@
   <div class="hud-msg" id="hudMsg"></div>
   <button class="hud-pause" id="pauseBtn" data-act="pause" aria-label="Pause">❚❚</button>
   <div class="hud-help">
-    <b>→</b> avancer &nbsp;•&nbsp; <b>←</b> freiner / reculer &nbsp;•&nbsp;
-    <b>↑</b> rotation arrière &nbsp;•&nbsp; <b>↓</b> rotation avant &nbsp;•&nbsp;
+    <b>→</b> avancer &nbsp;•&nbsp; <b>←</b> freiner &nbsp;•&nbsp;
+    <b>↑</b> / <b>↓</b> rotation &nbsp;•&nbsp; <b>↑ + →</b> wheelie &nbsp;•&nbsp;
     <b>Espace</b> nitro &nbsp;•&nbsp; <b>P</b> pause &nbsp;•&nbsp; <b>R</b> recommencer
   </div>
 </div>
@@ -49,7 +49,9 @@
     </div>
 
     <div class="menu-buttons">
-      <button class="btn primary" data-act="play">▶&nbsp; JOUER</button>
+      <button class="btn primary" data-act="free">▶&nbsp; COURSE LIBRE</button>
+      <button class="btn gold" data-act="champ">🏆&nbsp; CHAMPIONNAT</button>
+      <button class="btn" data-act="daily">📅&nbsp; DÉFI DU JOUR</button>
       <button class="btn" data-act="shop-bikes">🏍&nbsp; GARAGE MOTO</button>
       <button class="btn" data-act="shop-chars">🏁&nbsp; PILOTES</button>
     </div>
@@ -110,6 +112,11 @@
       <button class="btn" data-act="menu">☰&nbsp; MENU</button>
     </div>
   </div>
+</div>
+
+<!-- ===== CHAMPIONNAT (écran de la série et résultats de course, construits par game.js) ===== -->
+<div id="champ" class="overlay hidden">
+  <div class="over-inner champ-inner" id="champBody"></div>
 </div>
 
 <!-- ===== PAUSE ===== -->

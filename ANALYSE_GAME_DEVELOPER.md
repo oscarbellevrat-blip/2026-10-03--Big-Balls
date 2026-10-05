@@ -168,3 +168,37 @@ Défauts corrigés : D1, D3, D4, D5, D6, D7 (sauf la graine `safeX` d'une ancien
 ## Réglages à connaître
 
 `NITRO_CAP` (1,4), `OVERSPEED_DRAG` (6000), `AIR_TORQUE` (3,0), `FLIP_HUMAN` (1,15), `UNLOCK_WORLDS` (true), `SHAKE_MAX` / `SHAKE_DECAY`, `ampAt` (80000, plafond 0,35), `GEN.ramp` du Monde 3 (1,25).
+
+---
+
+# Lot 2 : mécaniques de jeu, championnat, défi du jour (2026-10-05)
+
+Testé avec un harnais Node qui charge le vrai `game.js` (physique, boucle et rendu sur un canvas factice), avec l'IA des rivaux comme pilote, puis vérifié dans Edge (Playwright, aucune erreur de page). Les chiffres viennent de bots, pas de joueurs humains.
+
+## Ajouté
+
+| Mécanique | Ce qu'elle fait | Mesuré |
+|---|---|---|
+| Atterrissage parfait | Moins de 10° d'écart avec la pente : +12 % de `top` en élan, +20 % de nitro, maillon de chaîne, crédits. Repère d'atterrissage en vol (vert = parfait, jaune = propre, rouge = chute) | Une IA qui vise bien en réussit la plupart |
+| Nitro gagnée | Recharge passive 0,10 → 0,025/s ; +0,06/s en vol ; parfaits et figures la remplissent | — |
+| Wheelie | ↑ + gaz au sol. Payé à partir de 1 s, compte dans la chaîne | Tenable par toutes les motos avec 150-200 ms de réaction (terrain plat) ; ↑ tenu en continu fait basculer en 1,3-2,8 s |
+| Chaîne de style | Figures, parfaits et wheelies alimentent le même multiplicateur | — |
+| Ricochet (Monde 3) | Toucher l'eau à plat (< 20°) et lancé (> 220 px/s) fait rebondir, 3 fois au plus | — |
+| Berges des lacs | Pente douce de 32° au lieu d'un mur de 75° (corrige D13) | Rusty Monde 3 : 6 courses de 60 s survécues sur 8, contre 0 sur 8 |
+| Atouts de moto | Un par moto (`PERKS`, `BIKE_PERK`), affiché au garage | — |
+| Améliorations | 4 réglages × 5 niveaux par moto, prix indexé sur la moto (`UPGRADES`, `upgCost`) | — |
+| Missions | « Wheelie de X s » et « X atterrissages parfaits » | — |
+| Défi du jour | Graine et monde fixés par date, record du jour (+1 crédit par mètre gagné), fantôme du record (15 positions/s) | — |
+| Championnat | 3 séries × 3 courses, 4 rivaux IA (même physique), points 10/6/4/2/1, primes, trophées. Essence et bidons, panne sèche = abandon, chute = reprise au dernier point sûr | Monde 1 : Rusty 3e-4e, Dirt Scout podium, MX 250 gagne. Monde 2 : Pocket Rocket podium, R1 gagne. Monde 3 : R1 / Rally Beast podium |
+
+Défaut trouvé et corrigé en simulation : une même chute pouvait se rejouer sans fin après la reprise (111 chutes d'affilée). Désormais l'élan de reprise varie, puis le pilote est posé après l'obstacle au 4e échec.
+
+## Réglages à connaître
+
+`NITRO_REGEN`, `NITRO_AIR`, `PERFECT_ANG`, `PERFECT_BOOST`, `WHEELIE_TORQUE` / `HOLD` / `ASSIST` / `DAMP` / `AV`, `SKIP_SPEED`, `SKIP_ANGLE`, `CHAMP` (rivaux, longueurs, primes), `CHAMP_PTS`, `RACE_PAY`, `FUEL_IDLE`, `FUEL_THR`, `FUEL_CAN`, espacement des bidons dans `placeCans`, élastique des rivaux dans `botThink` (±10 % à 250 m).
+
+## Hypothèses non vérifiées
+
+- Difficulté réelle du championnat pour un humain : l'IA pilote parfaitement en l'air mais ne choisit pas ses trajectoires.
+- Wheelie sur terrain bosselé : les bosses coupent souvent le wheelie vers 1 s, d'où les cibles de mission 1,5 / 3 / 5 s.
+- Wheelie en tactile : il faut deux doigts (◤ et ▶ en même temps). Pas testé sur un vrai téléphone.
